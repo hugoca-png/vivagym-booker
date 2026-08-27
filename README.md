@@ -2,6 +2,10 @@
 
 Automatiza a reserva da aula **V-Power**, Domingos às **10h30**, no **Ginásio de Benfica** — a tua adesão é **PRIME**, pelo que a marcação abre exatamente **7 dias antes**, ou seja, todos os Domingos às 10h30 (quando essa aula começa) abre a reserva da aula de daqui a uma semana.
 
+Duas camadas de tentativa, todos os Domingos:
+1. **Rajada às 10h30** — tenta a alta frequência durante ~90s, para ganhar a corrida assim que abre.
+2. **Rede de segurança, de hora a hora (10h-23h)** — se a rajada falhar (abertura atrasada, ou surgir uma vaga por cancelamento), continua a verificar sem repetir a rajada nem enviar email a cada hora; só notifica quando conseguir reservar.
+
 ## Duas versões neste repositório
 
 - **`booker_api.py`** (recomendado) — fala diretamente com a API interna da VivaGym (`middleware.vivagym.com`), descoberta a partir dos ficheiros JavaScript públicos da Área de Cliente. Não precisa de browser, é muito mais rápido (importante numa aula que esgota em segundos) e é o que o GitHub Actions corre.

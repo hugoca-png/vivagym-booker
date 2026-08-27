@@ -37,6 +37,10 @@ BASE_URL = "https://middleware.vivagym.com/public/pt-pt/api/v1"
 RETRY_WINDOW_SECONDS = 90
 RETRY_INTERVAL_SECONDS = 0.3
 ARRIVE_EARLY_SECONDS = 20
+# Se "agora" estiver a menos disto da abertura prevista, vale a pena esperar e
+# fazer a rajada de tentativas nesta mesma execução (cobre o cron horário que
+# calhe cair pouco antes da hora exata).
+BURST_LOOKAHEAD_SECONDS = 45 * 60
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
 
 CSRF_GET_DATA = "api_v1_person_get_data_public"
@@ -252,6 +256,58 @@ def attempt_booking(session: requests.Session, token: str, gym_id: int, cfg: dic
     return False
 
 
+def attempt_single_check(session: requests.Session, token: str, gym_id: int, cfg: dict, date_str: str) -> bool:
+    """Uma única verificação leve (sem rajada) -- usada nas passagens horárias fora
+    da janela de abertura prevista, para apanhar aberturas atrasadas ou cancelamentos."""
+    activities = filter_activities(session, token, gym_id, date_str)
+    match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"])
+    if match is None:
+        logging.info("Verificação horária: aula ainda não está publicada no horário.")
+        return False
+
+    capacity = match.get("classCapacity", 0)
+    booked = match.get("bookedCount", 0)
+    available = capacity - booked
+    booking_id = match.get("bookingId") or {}
+
+    if available <= 0 or not booking_id.get("id"):
+        logging.info(f"Verificação horária: ainda sem vagas ({available}/{capacity}).")
+        return False
+
+    logging.info(f"Verificação horária: vaga disponível ({available}/{capacity})! A reservar...")
+    status, result = book_activity(session, token, booking_id["center"], booking_id["id"])
+    if status < 300 and not result.get("error"):
+        logging.info(f"Reserva confirmada (status {status}): {result}")
+        return True
+    logging.warning(f"Falha ao reservar (status {status}): {result}")
+    return False
+
+
+def is_already_booked(session: requests.Session, token: str, class_name: str, class_date: str) -> bool:
+    """Verifica se já existe uma reserva BOOKED para essa data (evita tentar de novo
+    e reenviar notificações depois de já termos conseguido). Falha em modo seguro:
+    qualquer erro/formato inesperado é tratado como 'não sei', para nunca bloquear
+    uma tentativa real por engano."""
+    try:
+        r = session.get(f"{BASE_URL}/activities", headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        if r.status_code >= 300:
+            return False
+        data = r.json()
+        items = data.get("activities") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return False
+        for item in items:
+            if item.get("state") != "BOOKED":
+                continue
+            booking = item.get("booking") or {}
+            if str(booking.get("date", "")).startswith(class_date):
+                return True
+        return False
+    except Exception as e:
+        logging.info(f"Não consegui confirmar reservas existentes (a assumir que não está reservada): {e}")
+        return False
+
+
 def notify_windows(title: str, message: str, duration_ms: int = 15000):
     title_b64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
     message_b64 = base64.b64encode(message.encode("utf-8")).decode("ascii")
@@ -346,21 +402,45 @@ def main():
             discover(session, token, gym_id, cfg)
             return
 
-        arrive_at = open_dt - timedelta(seconds=ARRIVE_EARLY_SECONDS)
-        if now_lisbon() < arrive_at:
-            wait_until(arrive_at)
-        if now_lisbon() < open_dt:
-            wait_until(open_dt)
-
         date_str = class_dt.date().isoformat()
-        success = attempt_booking(session, token, gym_id, cfg, date_str, dry_run=args.dry_run)
-        logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: FALHOU")
 
-        if is_real_run:
-            if success:
+        if is_real_run and is_already_booked(session, token, cfg["CLASS_NAME"], date_str):
+            logging.info("Já está reservada para esta data -- nada a fazer nesta execução.")
+            return
+
+        arrive_at = open_dt - timedelta(seconds=ARRIVE_EARLY_SECONDS)
+        seconds_to_arrive = (arrive_at - now_lisbon()).total_seconds()
+
+        if 0 <= seconds_to_arrive <= BURST_LOOKAHEAD_SECONDS:
+            # Estamos perto o suficiente da abertura prevista -- vale a pena esperar
+            # e disparar a rajada de tentativas nesta mesma execução.
+            wait_until(arrive_at)
+            wait_until(open_dt)
+            success = attempt_booking(session, token, gym_id, cfg, date_str, dry_run=args.dry_run)
+            logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: FALHOU")
+            if is_real_run:
+                if success:
+                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {class_label}.")
+                else:
+                    notify(
+                        "VivaGym - Reserva falhou",
+                        f"Não consegui reservar {class_label} na hora exata da abertura. "
+                        f"Vou continuar a verificar de hora a hora (pode ser que a abertura tenha atrasado, "
+                        f"ou que apareça uma vaga por cancelamento). Logs em logs/.",
+                    )
+        elif seconds_to_arrive < 0:
+            # Já passou a hora prevista de abertura (ou esta execução é uma
+            # passagem horária de rede de segurança) -- só uma verificação leve,
+            # sem rajada nem spam de notificações se ainda não houver vagas.
+            success = attempt_single_check(session, token, gym_id, cfg, date_str)
+            logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: sem novidade")
+            if is_real_run and success:
                 notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {class_label}.")
-            else:
-                notify("VivaGym - Reserva falhou", f"Não consegui reservar {class_label}. Verifica os logs em logs/.")
+        else:
+            logging.info(
+                f"Ainda faltam {seconds_to_arrive:.0f}s para a janela de abertura prevista "
+                f"-- fora do alcance desta execução, não faço nada."
+            )
     except Exception as e:
         logging.exception("Erro inesperado durante a execução.")
         if is_real_run:
