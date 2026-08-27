@@ -2,11 +2,17 @@
 
 Automatiza a reserva da aula **V-Power**, Domingos às **10h30**, no **Ginásio de Benfica** — a tua adesão é **PRIME**, pelo que a marcação abre exatamente **7 dias antes**, ou seja, todos os Domingos às 10h30 (quando essa aula começa) abre a reserva da aula de daqui a uma semana.
 
+## Duas versões neste repositório
+
+- **`booker_api.py`** (recomendado) — fala diretamente com a API interna da VivaGym (`middleware.vivagym.com`), descoberta a partir dos ficheiros JavaScript públicos da Área de Cliente. Não precisa de browser, é muito mais rápido (importante numa aula que esgota em segundos) e é o que o GitHub Actions corre.
+- **`booker.py`** — versão original com Playwright (browser automatizado), mantida como reserva caso a API da VivaGym mude e a `booker_api.py` deixe de funcionar. Mais lenta, mas mais resiliente a mudanças internas (usa o mesmo site que um utilizador humano vê).
+
+As instruções abaixo são para `booker_api.py`. Se um dia precisares da versão browser, os comandos são iguais mas trocando o nome do ficheiro, e precisas também de `python -m playwright install chromium`.
+
 ## 1. Instalar dependências
 
 ```bash
 python -m pip install -r requirements.txt
-python -m playwright install chromium
 ```
 
 ## 2. Configurar credenciais
@@ -21,33 +27,29 @@ Depois edita o `.env` num editor de texto.
 
 ## 3. Mapear a Área de Cliente (importante, fazer uma vez)
 
-Antes de confiar no agente para a marcação real, corre em modo "discover" para veres a estrutura da tua Área de Cliente depois do login:
+Antes de confiar no agente para a marcação real, corre em modo "discover" para veres o que a API devolve com a tua conta:
 
 ```bash
-python booker.py --discover --headed
+python booker_api.py --discover
 ```
 
-Isto faz login com as tuas credenciais (só no teu PC, eu nunca as vejo) e guarda em `logs/`:
-- um screenshot de página inteira (`discover_*.png`)
-- um JSON com todos os links e botões visíveis (`discover_*.json`)
-
-**Podes partilhar comigo esses dois ficheiros** (não contêm a password) para eu afinar com precisão os seletores em `booker.py` (a função `goto_booking_area`, `select_gym` e `find_class_row` estão feitas com heurísticas por texto — funcionam provavelmente, mas convém confirmar com o layout real).
+Isto faz login (localmente, com as tuas credenciais — eu nunca as vejo), lista as aulas do dia alvo no ginásio configurado, e guarda a resposta completa em `logs/discover_api_*.json`. Confirma nos logs se a aula "V-Power" aparece com a hora certa e um `bookingId` válido.
 
 ## 4. Testar sem reservar de verdade
 
 ```bash
-python booker.py --dry-run --headed
+python booker_api.py --dry-run
 ```
 
-Faz tudo (login, navegação, encontrar a aula) mas não clica em "Reservar". Confirma nos logs se encontrou a aula certa.
+Faz tudo (login, listagem, encontrar a aula com vaga) mas não chama o endpoint de reserva. Como agora mesmo a aula está esgotada, o esperado é ficar a repetir durante a janela de tentativas e no fim reportar "FALHOU" — isso confirma que a deteção está a funcionar.
 
 ## 5. Testar localmente "a sério"
 
 ```bash
-python booker.py
+python booker_api.py
 ```
 
-Corre em modo invisível (headless), faz login, espera pela hora exata de abertura (hora de Lisboa, sempre correta mesmo com mudança de hora de Verão/Inverno) e tenta reservar em loop durante ~90 segundos. No final, tenta notificar o resultado (sucesso/falha/erro) por email via Resend, e por notificação do Windows se estiveres a correr localmente.
+Espera pela hora exata de abertura (hora de Lisboa, sempre correta mesmo com mudança de hora de Verão/Inverno) e tenta reservar em loop. No final, tenta notificar o resultado (sucesso/falha/erro) por email via Resend, e por notificação do Windows se estiveres a correr localmente.
 
 Isto é só para validares antes de avançar para a versão autónoma na cloud (secção 7). Corrida localmente, continua dependente do teu PC estar ligado.
 
@@ -91,7 +93,8 @@ A partir daqui, corre sozinho todas as semanas, com o teu PC ligado ou não — 
 
 ## Notas
 
-- Os logs de cada execução ficam em `logs/booker_*.log` localmente, ou como artefacto descarregável em cada execução no GitHub Actions (separador Actions → execução → Artifacts).
-- Se a VivaGym mudar o site, os seletores heurísticos podem falhar — corre `--discover` de novo (localmente) e partilha os ficheiros para eu atualizar o `booker.py`, depois faz `git push` para atualizar a versão na cloud.
+- Os logs de cada execução ficam em `logs/booker_api_*.log` localmente, ou como artefacto descarregável em cada execução no GitHub Actions (separador Actions → execução → Artifacts).
+- Se a VivaGym mudar a API interna (endpoints, nomes de campos), a `booker_api.py` pode falhar — corre `--discover` de novo (localmente) e partilha o `discover_api_*.json` para eu ajustar. Como reserva, há sempre a `booker.py` (versão browser) por trás.
 - O ficheiro `.env` está no `.gitignore` — nunca vai para controlo de versões; na cloud, os mesmos valores vivem nos Secrets/Variables do GitHub, geridos só por ti.
 - O agendamento do GitHub Actions (`cron: "25 9 * * 0"`) tem folga suficiente para cobrir hora de Verão e de Inverno em Lisboa — o script espera internamente pela hora exata, por isso não precisas de ajustar o cron duas vezes por ano.
+- O ID do Ginásio de Benfica (718) é resolvido automaticamente a partir do nome via um endpoint público (`/api/v1/gyms`), não está fixo no código — se um dia mudares de ginásio, basta alterar `GYM_NAME`.
