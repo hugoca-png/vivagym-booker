@@ -33,6 +33,8 @@ from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 
+load_dotenv()
+
 BASE_URL = "https://middleware.vivagym.com/public/pt-pt/api/v1"
 RETRY_WINDOW_SECONDS = 90
 RETRY_INTERVAL_SECONDS = 0.3
@@ -42,6 +44,10 @@ ARRIVE_EARLY_SECONDS = 20
 # calhe cair pouco antes da hora exata).
 BURST_LOOKAHEAD_SECONDS = 45 * 60
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
+# O horário da aula pode variar de semana para semana (ex: passar de 10:30
+# para 10:00 ou 11:00) -- aceitamos qualquer aula com o mesmo nome dentro
+# desta margem, e escolhemos a mais próxima da hora configurada em CLASS_TIME.
+CLASS_TIME_MARGIN_MINUTES = int(os.getenv("CLASS_TIME_MARGIN_MINUTES", "60"))
 
 CSRF_GET_DATA = "api_v1_person_get_data_public"
 CSRF_FILTER = "api_v1_activities_filter_public"
@@ -66,7 +72,6 @@ def setup_logging():
 
 
 def load_config():
-    load_dotenv()
     required = ["VIVAGYM_EMAIL", "VIVAGYM_PASSWORD", "GYM_NAME", "CLASS_NAME", "CLASS_DAY", "CLASS_TIME"]
     cfg = {k: os.getenv(k) for k in required}
     missing = [k for k, v in cfg.items() if not v]
@@ -176,11 +181,32 @@ def book_activity(session: requests.Session, token: str, gym_id: int, activity_i
         return r.status_code, {"raw": r.text}
 
 
-def find_matching_activity(activities: list, class_name: str, time_str: str):
+def _time_to_minutes(time_str: str) -> int:
+    hh, mm = (int(x) for x in time_str.strip().split(":"))
+    return hh * 60 + mm
+
+
+def find_matching_activity(activities: list, class_name: str, time_str: str, margin_minutes: int = CLASS_TIME_MARGIN_MINUTES):
+    """Procura a aula pelo nome, aceitando que a hora de início ande à volta da
+    hora configurada (o horário da VivaGym por vezes muda ligeiramente de
+    semana para semana). Entre várias aulas com o mesmo nome dentro da
+    margem, escolhe a mais próxima da hora alvo."""
+    target_minutes = _time_to_minutes(time_str)
+    best = None
+    best_diff = None
     for a in activities:
-        if a.get("name", "").strip().lower() == class_name.strip().lower() and a.get("startTime") == time_str:
-            return a
-    return None
+        if a.get("name", "").strip().lower() != class_name.strip().lower():
+            continue
+        start_time = a.get("startTime")
+        if not start_time:
+            continue
+        try:
+            diff = abs(_time_to_minutes(start_time) - target_minutes)
+        except (ValueError, AttributeError):
+            continue
+        if diff <= margin_minutes and (best_diff is None or diff < best_diff):
+            best, best_diff = a, diff
+    return best
 
 
 def discover(session: requests.Session, token: str, gym_id: int, cfg: dict):
@@ -209,7 +235,10 @@ def discover(session: requests.Session, token: str, gym_id: int, cfg: dict):
     if match:
         logging.info(f"Aula alvo encontrada: {json.dumps(match, ensure_ascii=False)}")
     else:
-        logging.warning("Não encontrei a aula alvo nesse dia (pode ainda não estar publicada, ou nome/hora não batem certo).")
+        logging.warning(
+            f"Não encontrei a aula alvo nesse dia, nem dentro da margem de "
+            f"±{CLASS_TIME_MARGIN_MINUTES} min (pode ainda não estar publicada, ou o nome não bate certo)."
+        )
 
 
 def attempt_booking(session: requests.Session, token: str, gym_id: int, cfg: dict, date_str: str, dry_run: bool) -> bool:
