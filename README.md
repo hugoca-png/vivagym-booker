@@ -1,10 +1,12 @@
 # Agente de marcação VivaGym
 
-Automatiza a reserva da aula **V-Power**, Domingos às **10h30**, no **Ginásio de Benfica** — a tua adesão é **PRIME**, pelo que a marcação abre exatamente **7 dias antes**, ou seja, todos os Domingos às 10h30 (quando essa aula começa) abre a reserva da aula de daqui a uma semana.
+Automatiza a reserva da aula **V-Power**, Domingos às **10h30**, no **Ginásio de Benfica** — a tua adesão é **PRIME**. A documentação oficial da VivaGym fala em marcação "7 dias antes", mas na prática (confirmado pelo utilizador) a janela abre **6 dias antes**, ou seja, todas as **Segundas-feiras às 10h30** abre a reserva da aula de Domingo seguinte.
 
-Duas camadas de tentativa, todos os Domingos:
+Duas camadas de tentativa, todas as Segundas-feiras:
 1. **Rajada às 10h30** — tenta a alta frequência durante ~90s, para ganhar a corrida assim que abre.
 2. **Rede de segurança, de hora a hora (10h-23h)** — se a rajada falhar (abertura atrasada, ou surgir uma vaga por cancelamento), continua a verificar sem repetir a rajada nem enviar email a cada hora; só notifica quando conseguir reservar.
+
+Este intervalo (`BOOKING_WINDOW_DAYS`, por omissão 6) é configurável via `.env` caso a VivaGym volte a mudar a regra.
 
 ## Duas versões neste repositório
 
@@ -90,7 +92,7 @@ Isto faz o agente correr todas as semanas sem depender do teu PC estar ligado.
      - `CLASS_DAY` = `Domingo`
      - `CLASS_TIME` = `10:30`
      - `NOTIFY_EMAIL_TO` = `hugoca@gmail.com`
-4. O workflow já está em [.github/workflows/vivagym-booking.yml](.github/workflows/vivagym-booking.yml), agendado para todos os Domingos. Para testar sem esperar pelo cron, vai a **Actions → VivaGym Booking Agent → Run workflow** (botão "workflow_dispatch") e corre manualmente uma vez.
+4. O workflow já está em [.github/workflows/vivagym-booking.yml](.github/workflows/vivagym-booking.yml), agendado para todas as Segundas-feiras (dia em que a reserva abre). Para testar sem esperar pelo cron, vai a **Actions → VivaGym Booking Agent → Run workflow** (botão "workflow_dispatch") e corre manualmente uma vez.
 5. Confirma no separador **Actions** que a execução terminou com sucesso, e verifica se recebeste o email de resultado.
 
 A partir daqui, corre sozinho todas as semanas, com o teu PC ligado ou não — só precisas de verificar o email de resultado.
@@ -100,5 +102,5 @@ A partir daqui, corre sozinho todas as semanas, com o teu PC ligado ou não — 
 - Os logs de cada execução ficam em `logs/booker_api_*.log` localmente, ou como artefacto descarregável em cada execução no GitHub Actions (separador Actions → execução → Artifacts).
 - Se a VivaGym mudar a API interna (endpoints, nomes de campos), a `booker_api.py` pode falhar — corre `--discover` de novo (localmente) e partilha o `discover_api_*.json` para eu ajustar. Como reserva, há sempre a `booker.py` (versão browser) por trás.
 - O ficheiro `.env` está no `.gitignore` — nunca vai para controlo de versões; na cloud, os mesmos valores vivem nos Secrets/Variables do GitHub, geridos só por ti.
-- O agendamento do GitHub Actions (`cron: "25 9 * * 0"`) tem folga suficiente para cobrir hora de Verão e de Inverno em Lisboa — o script espera internamente pela hora exata, por isso não precisas de ajustar o cron duas vezes por ano.
+- O agendamento do GitHub Actions (`cron: "25 9 * * 1"`, Segunda-feira) tem folga suficiente para cobrir hora de Verão e de Inverno em Lisboa — o script espera internamente pela hora exata, por isso não precisas de ajustar o cron duas vezes por ano.
 - O ID do Ginásio de Benfica (718) é resolvido automaticamente a partir do nome via um endpoint público (`/api/v1/gyms`), não está fixo no código — se um dia mudares de ginásio, basta alterar `GYM_NAME`.

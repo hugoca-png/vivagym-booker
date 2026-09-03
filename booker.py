@@ -23,12 +23,18 @@ import requests
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
+load_dotenv()
+
 LOGIN_URL = "https://www.vivagym.com/pt-pt/members/login/"
 BOOKINGS_URL = "https://www.vivagym.com/pt-pt/members/bookings/"
 RETRY_WINDOW_SECONDS = 90
 RETRY_INTERVAL_SECONDS = 0.5
 ARRIVE_EARLY_SECONDS = 60
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
+# Quantos dias antes da aula é que as inscrições abrem, na prática (confirmado
+# pelo utilizador -- a documentação da VivaGym para a adesão PRIME fala em
+# "7 dias", mas na prática a janela abre 6 dias antes).
+BOOKING_WINDOW_DAYS = int(os.getenv("BOOKING_WINDOW_DAYS", "6"))
 
 DIAS_SEMANA = {
     "segunda": 0, "terca": 1, "terça": 1, "quarta": 2, "quinta": 3,
@@ -49,7 +55,6 @@ def setup_logging():
 
 
 def load_config():
-    load_dotenv()
     required = ["VIVAGYM_EMAIL", "VIVAGYM_PASSWORD", "GYM_NAME", "CLASS_NAME", "CLASS_DAY", "CLASS_TIME"]
     cfg = {k: os.getenv(k) for k in required}
     missing = [k for k, v in cfg.items() if not v]
@@ -419,8 +424,11 @@ def main():
     cfg = load_config()
 
     class_dt = next_class_datetime(cfg["CLASS_DAY"], cfg["CLASS_TIME"])
-    open_dt = class_dt - timedelta(days=7)
-    logging.info(f"Próxima aula alvo: {class_dt.isoformat()} | Abertura de reserva (PRIME, 7 dias): {open_dt.isoformat()}")
+    open_dt = class_dt - timedelta(days=BOOKING_WINDOW_DAYS)
+    logging.info(
+        f"Próxima aula alvo: {class_dt.isoformat()} | "
+        f"Abertura de reserva ({BOOKING_WINDOW_DAYS} dias antes): {open_dt.isoformat()}"
+    )
 
     is_real_run = not args.discover and not args.dry_run
     class_label = f"{cfg['CLASS_NAME']} ({cfg['CLASS_DAY']} {cfg['CLASS_TIME']}, {cfg['GYM_NAME']})"

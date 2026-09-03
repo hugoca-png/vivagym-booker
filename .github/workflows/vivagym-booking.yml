@@ -2,17 +2,22 @@ name: VivaGym Booking Agent
 
 on:
   schedule:
-    # Rajada principal: 09:25 UTC todos os Domingos. É cedo o suficiente para
-    # cobrir tanto hora de Verão (WEST, UTC+1 -> alvo real 09:30 UTC) como
-    # hora de Inverno (WET, UTC+0 -> alvo real 10:30 UTC). O script espera
-    # pela hora exata em Europe/Lisbon internamente.
-    - cron: "25 9 * * 0"
-    # Rede de segurança: verificação leve de hora a hora, só ao Domingo,
+    # A aula é ao Domingo às 10h30, mas as inscrições abrem 6 dias antes --
+    # ou seja, à SEGUNDA-FEIRA às 10h30 (confirmado pelo utilizador; a
+    # documentação da VivaGym para PRIME fala em "7 dias", mas na prática
+    # são 6).
+    #
+    # Rajada principal: 09:25 UTC toda a Segunda-feira. É cedo o suficiente
+    # para cobrir tanto hora de Verão (WEST, UTC+1 -> alvo real 09:30 UTC)
+    # como hora de Inverno (WET, UTC+0 -> alvo real 10:30 UTC). O script
+    # espera pela hora exata em Europe/Lisbon internamente.
+    - cron: "25 9 * * 1"
+    # Rede de segurança: verificação leve de hora a hora, só à Segunda-feira,
     # cobrindo 09h-23h UTC (10h-23h em Lisboa, com folga para Verão/Inverno).
     # Se a rajada principal falhar (abertura atrasada, ou aparecer uma vaga
     # por cancelamento), esta passagem tenta reservar sem repetir a rajada
     # nem enviar email a cada hora -- só notifica se conseguir.
-    - cron: "10 9-23 * * 0"
+    - cron: "10 9-23 * * 1"
   workflow_dispatch: {}
 
 jobs:

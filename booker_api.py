@@ -49,6 +49,11 @@ LISBON_TZ = ZoneInfo("Europe/Lisbon")
 # desta margem, e escolhemos a mais próxima da hora configurada em CLASS_TIME.
 CLASS_TIME_MARGIN_MINUTES = int(os.getenv("CLASS_TIME_MARGIN_MINUTES", "60"))
 
+# Quantos dias antes da aula é que as inscrições abrem, na prática (confirmado
+# pelo utilizador -- a documentação da VivaGym para a adesão PRIME fala em
+# "7 dias", mas na prática a janela abre 6 dias antes).
+BOOKING_WINDOW_DAYS = int(os.getenv("BOOKING_WINDOW_DAYS", "6"))
+
 CSRF_GET_DATA = "api_v1_person_get_data_public"
 CSRF_FILTER = "api_v1_activities_filter_public"
 CSRF_BOOK = "api_v1_activities_book_public"
@@ -413,8 +418,11 @@ def main():
     cfg = load_config()
 
     class_dt = next_class_datetime(cfg["CLASS_DAY"], cfg["CLASS_TIME"])
-    open_dt = class_dt - timedelta(days=7)
-    logging.info(f"Próxima aula alvo: {class_dt.isoformat()} | Abertura de reserva (PRIME, 7 dias): {open_dt.isoformat()}")
+    open_dt = class_dt - timedelta(days=BOOKING_WINDOW_DAYS)
+    logging.info(
+        f"Próxima aula alvo: {class_dt.isoformat()} | "
+        f"Abertura de reserva ({BOOKING_WINDOW_DAYS} dias antes): {open_dt.isoformat()}"
+    )
 
     is_real_run = not args.discover and not args.dry_run
     class_label = f"{cfg['CLASS_NAME']} ({cfg['CLASS_DAY']} {cfg['CLASS_TIME']}, {cfg['GYM_NAME']})"
