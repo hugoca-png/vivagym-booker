@@ -246,7 +246,10 @@ def discover(session: requests.Session, token: str, gym_id: int, cfg: dict):
         )
 
 
-def attempt_booking(session: requests.Session, token: str, gym_id: int, cfg: dict, date_str: str, dry_run: bool) -> bool:
+def attempt_booking(session: requests.Session, token: str, gym_id: int, cfg: dict, date_str: str, dry_run: bool) -> tuple:
+    """Devolve (sucesso, match) -- 'match' é a aula real encontrada na API (com a
+    sua data/hora reais), para as notificações poderem reportar o horário
+    verdadeiro em vez do CLASS_TIME configurado (que é só um alvo de busca)."""
     deadline = time.monotonic() + RETRY_WINDOW_SECONDS
     attempt = 0
     while time.monotonic() < deadline:
@@ -277,27 +280,28 @@ def attempt_booking(session: requests.Session, token: str, gym_id: int, cfg: dic
         logging.info(f"[tentativa {attempt}] Vaga disponível ({available}/{capacity}).")
         if dry_run:
             logging.info("DRY RUN: não vou chamar o endpoint de reserva.")
-            return True
+            return True, match
 
         status, result = book_activity(session, token, booking_id["center"], booking_id["id"])
         if status < 300 and not result.get("error"):
             logging.info(f"Reserva confirmada (status {status}): {result}")
-            return True
+            return True, match
         logging.warning(f"[tentativa {attempt}] Falha ao reservar (status {status}): {result}")
         time.sleep(RETRY_INTERVAL_SECONDS)
 
     logging.error("Esgotado o tempo de tentativas sem sucesso.")
-    return False
+    return False, None
 
 
-def attempt_single_check(session: requests.Session, token: str, gym_id: int, cfg: dict, date_str: str) -> bool:
+def attempt_single_check(session: requests.Session, token: str, gym_id: int, cfg: dict, date_str: str) -> tuple:
     """Uma única verificação leve (sem rajada) -- usada nas passagens horárias fora
-    da janela de abertura prevista, para apanhar aberturas atrasadas ou cancelamentos."""
+    da janela de abertura prevista, para apanhar aberturas atrasadas ou cancelamentos.
+    Devolve (sucesso, match), tal como attempt_booking."""
     activities = filter_activities(session, token, gym_id, date_str)
     match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"])
     if match is None:
         logging.info("Verificação horária: aula ainda não está publicada no horário.")
-        return False
+        return False, None
 
     capacity = match.get("classCapacity", 0)
     booked = match.get("bookedCount", 0)
@@ -306,15 +310,15 @@ def attempt_single_check(session: requests.Session, token: str, gym_id: int, cfg
 
     if available <= 0 or not booking_id.get("id"):
         logging.info(f"Verificação horária: ainda sem vagas ({available}/{capacity}).")
-        return False
+        return False, None
 
     logging.info(f"Verificação horária: vaga disponível ({available}/{capacity})! A reservar...")
     status, result = book_activity(session, token, booking_id["center"], booking_id["id"])
     if status < 300 and not result.get("error"):
         logging.info(f"Reserva confirmada (status {status}): {result}")
-        return True
+        return True, match
     logging.warning(f"Falha ao reservar (status {status}): {result}")
-    return False
+    return False, None
 
 
 def is_already_booked(session: requests.Session, token: str, class_name: str, class_date: str) -> bool:
@@ -340,6 +344,22 @@ def is_already_booked(session: requests.Session, token: str, class_name: str, cl
     except Exception as e:
         logging.info(f"Não consegui confirmar reservas existentes (a assumir que não está reservada): {e}")
         return False
+
+
+def format_class_label(cfg: dict, match: dict = None) -> str:
+    """Texto descritivo da aula para as notificações. Quando há um 'match' real
+    (aula encontrada/reservada via API), usa a data e hora reais devolvidas pela
+    VivaGym -- que podem não coincidir exatamente com CLASS_TIME, já que este é
+    apenas o alvo de busca (ver CLASS_TIME_MARGIN_MINUTES). Sem match, cai para
+    a descrição configurada (ex: caso de erro antes de encontrar alguma aula)."""
+    if match:
+        name = match.get("name") or cfg["CLASS_NAME"]
+        date = match.get("date") or ""
+        start = match.get("startTime") or cfg["CLASS_TIME"]
+        end = match.get("endTime")
+        time_part = f"{start}-{end}" if end else start
+        return f"{name} ({date} {time_part}, {cfg['GYM_NAME']})"
+    return f"{cfg['CLASS_NAME']} ({cfg['CLASS_DAY']} {cfg['CLASS_TIME']}, {cfg['GYM_NAME']})"
 
 
 def notify_windows(title: str, message: str, duration_ms: int = 15000):
@@ -453,11 +473,11 @@ def main():
             # e disparar a rajada de tentativas nesta mesma execução.
             wait_until(arrive_at)
             wait_until(open_dt)
-            success = attempt_booking(session, token, gym_id, cfg, date_str, dry_run=args.dry_run)
+            success, match = attempt_booking(session, token, gym_id, cfg, date_str, dry_run=args.dry_run)
             logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: FALHOU")
             if is_real_run:
                 if success:
-                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {class_label}.")
+                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
                 else:
                     notify(
                         "VivaGym - Reserva falhou",
@@ -469,10 +489,10 @@ def main():
             # Já passou a hora prevista de abertura (ou esta execução é uma
             # passagem horária de rede de segurança) -- só uma verificação leve,
             # sem rajada nem spam de notificações se ainda não houver vagas.
-            success = attempt_single_check(session, token, gym_id, cfg, date_str)
+            success, match = attempt_single_check(session, token, gym_id, cfg, date_str)
             logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: sem novidade")
             if is_real_run and success:
-                notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {class_label}.")
+                notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
         else:
             logging.info(
                 f"Ainda faltam {seconds_to_arrive:.0f}s para a janela de abertura prevista "

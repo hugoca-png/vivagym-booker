@@ -101,6 +101,7 @@ A partir daqui, corre sozinho todas as semanas, com o teu PC ligado ou não — 
 
 - Os logs de cada execução ficam em `logs/booker_api_*.log` localmente, ou como artefacto descarregável em cada execução no GitHub Actions (separador Actions → execução → Artifacts).
 - Se a VivaGym mudar a API interna (endpoints, nomes de campos), a `booker_api.py` pode falhar — corre `--discover` de novo (localmente) e partilha o `discover_api_*.json` para eu ajustar. Como reserva, há sempre a `booker.py` (versão browser) por trás.
+- O email de "Reserva confirmada" reporta a data/hora **reais** da aula encontrada e reservada (devolvidas pela API), não o `CLASS_TIME` configurado — que é só o alvo de busca, com a margem de `CLASS_TIME_MARGIN_MINUTES` à volta.
 - O ficheiro `.env` está no `.gitignore` — nunca vai para controlo de versões; na cloud, os mesmos valores vivem nos Secrets/Variables do GitHub, geridos só por ti.
 - O agendamento do GitHub Actions (`cron: "25 9 * * 1"`, Segunda-feira) tem folga suficiente para cobrir hora de Verão e de Inverno em Lisboa — o script espera internamente pela hora exata, por isso não precisas de ajustar o cron duas vezes por ano.
 - O ID do Ginásio de Benfica (718) é resolvido automaticamente a partir do nome via um endpoint público (`/api/v1/gyms`), não está fixo no código — se um dia mudares de ginásio, basta alterar `GYM_NAME`.
