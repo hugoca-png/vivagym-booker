@@ -97,6 +97,38 @@ Isto faz o agente correr todas as semanas sem depender do teu PC estar ligado.
 
 A partir daqui, corre sozinho todas as semanas, com o teu PC ligado ou não — só precisas de verificar o email de resultado.
 
+## 8. Argumentos de linha de comando
+
+Ginásio, aula, dia e hora objetivo podem ser passados por argumento (têm prioridade sobre o `.env`; as credenciais continuam só no `.env`):
+
+```bash
+python booker_api.py --gym Benfica --class-name V-Power --day Domingo --time 10:30 --margin-minutes 60 --dry-run
+```
+
+`--margin-minutes` é a tolerância à volta da hora objetivo (por omissão 60, ou seja, ±1h). Funciona com `--discover`, `--dry-run`, execução real e `--persist`.
+
+## 9. Lançar uma vez e insistir (`--persist`) + cron-job.org
+
+O cron do GitHub Actions é "best effort" e chega a atrasar horas ou saltar execuções. Por isso há um segundo workflow, [vivagym-persist.yml](.github/workflows/vivagym-persist.yml), só com `workflow_dispatch`, pensado para ser lançado **de fora** uma vez de manhã:
+
+- Se a abertura ainda estiver por vir, espera por ela e faz a rajada; depois tenta **de 30 em 30 minutos** até reservar.
+- **Prazo: 23:59 (hora de Lisboa) do dia em que foi lançado.** Se não conseguir, envia email "Sem vaga até ao fim do dia" e termina.
+- Se já estiver reservado, termina sem enviar email.
+- Um job do GitHub tem no máximo 6h, por isso relança-se a si próprio (com o mesmo prazo) ao fim de ~5h.
+- Emails: reserva confirmada; rajada falhou (uma vez); 3 erros seguidos; prazo atingido sem vaga.
+
+Localmente: `python booker_api.py --persist [--interval-minutes 30]`.
+
+### Configurar o cron-job.org
+
+1. No GitHub: **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**. Repositório: só `vivagym-booker`. Permissão: **Actions → Read and write**. Guarda o token (nunca o cole no chat).
+2. Em [cron-job.org](https://cron-job.org) cria um cronjob:
+   - URL: `https://api.github.com/repos/hugoca-png/vivagym-booker/actions/workflows/vivagym-persist.yml/dispatches`
+   - Método: `POST`; corpo: `{"ref":"main"}`
+   - Cabeçalhos: `Accept: application/vnd.github+json`, `Authorization: Bearer <o-teu-token>`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
+   - Horário: Segundas-feiras, de manhã (ex: 09:30), fuso **Europe/Lisbon**.
+3. Uma resposta `204` significa que o workflow foi lançado.
+
 ## Notas
 
 - Os logs de cada execução ficam em `logs/booker_api_*.log` localmente, ou como artefacto descarregável em cada execução no GitHub Actions (separador Actions → execução → Artifacts).

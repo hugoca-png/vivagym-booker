@@ -76,15 +76,32 @@ def setup_logging():
     return log_path
 
 
-def load_config():
+def load_config(args=None):
+    """Credenciais vêm sempre do ambiente/.env. Ginásio, aula, dia, hora e margem
+    podem vir por argumento de linha de comando (têm prioridade) ou do ambiente."""
+    overrides = {
+        "GYM_NAME": getattr(args, "gym", None),
+        "CLASS_NAME": getattr(args, "class_name", None),
+        "CLASS_DAY": getattr(args, "day", None),
+        "CLASS_TIME": getattr(args, "time", None),
+    }
     required = ["VIVAGYM_EMAIL", "VIVAGYM_PASSWORD", "GYM_NAME", "CLASS_NAME", "CLASS_DAY", "CLASS_TIME"]
-    cfg = {k: os.getenv(k) for k in required}
+    cfg = {k: overrides.get(k) or os.getenv(k) for k in required}
     missing = [k for k, v in cfg.items() if not v]
     if missing:
         raise SystemExit(
-            f"Faltam variáveis no .env: {', '.join(missing)}. "
-            f"Copia .env.example para .env e preenche os valores."
+            f"Faltam valores: {', '.join(missing)}. Passa-os por argumento "
+            f"(--gym, --class-name, --day, --time) ou define-os no .env "
+            f"(copia .env.example para .env)."
         )
+    if cfg["CLASS_DAY"].strip().lower() not in DIAS_SEMANA:
+        raise SystemExit(f"Dia da semana inválido: '{cfg['CLASS_DAY']}'. Usa um de: Segunda, Terca, Quarta, Quinta, Sexta, Sabado, Domingo.")
+    try:
+        _time_to_minutes(cfg["CLASS_TIME"])
+    except ValueError:
+        raise SystemExit(f"Hora inválida: '{cfg['CLASS_TIME']}'. Usa o formato HH:MM (24h), ex: 10:30.")
+    margin = getattr(args, "margin_minutes", None)
+    cfg["MARGIN_MINUTES"] = margin if margin is not None else CLASS_TIME_MARGIN_MINUTES
     return cfg
 
 
@@ -191,11 +208,13 @@ def _time_to_minutes(time_str: str) -> int:
     return hh * 60 + mm
 
 
-def find_matching_activity(activities: list, class_name: str, time_str: str, margin_minutes: int = CLASS_TIME_MARGIN_MINUTES):
+def find_matching_activity(activities: list, class_name: str, time_str: str, margin_minutes: int = None):
     """Procura a aula pelo nome, aceitando que a hora de início ande à volta da
     hora configurada (o horário da VivaGym por vezes muda ligeiramente de
     semana para semana). Entre várias aulas com o mesmo nome dentro da
     margem, escolhe a mais próxima da hora alvo."""
+    if margin_minutes is None:
+        margin_minutes = CLASS_TIME_MARGIN_MINUTES
     target_minutes = _time_to_minutes(time_str)
     best = None
     best_diff = None
@@ -236,13 +255,13 @@ def discover(session: requests.Session, token: str, gym_id: int, cfg: dict):
             f"({capacity - booked}/{capacity} vagas) bookingId={a.get('bookingId')}"
         )
 
-    match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"])
+    match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"], cfg["MARGIN_MINUTES"])
     if match:
         logging.info(f"Aula alvo encontrada: {json.dumps(match, ensure_ascii=False)}")
     else:
         logging.warning(
             f"Não encontrei a aula alvo nesse dia, nem dentro da margem de "
-            f"±{CLASS_TIME_MARGIN_MINUTES} min (pode ainda não estar publicada, ou o nome não bate certo)."
+            f"±{cfg['MARGIN_MINUTES']} min (pode ainda não estar publicada, ou o nome não bate certo)."
         )
 
 
@@ -261,7 +280,7 @@ def attempt_booking(session: requests.Session, token: str, gym_id: int, cfg: dic
             time.sleep(RETRY_INTERVAL_SECONDS)
             continue
 
-        match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"])
+        match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"], cfg["MARGIN_MINUTES"])
         if match is None:
             logging.info(f"[tentativa {attempt}] Aula ainda não aparece no horário. A repetir...")
             time.sleep(RETRY_INTERVAL_SECONDS)
@@ -298,7 +317,7 @@ def attempt_single_check(session: requests.Session, token: str, gym_id: int, cfg
     da janela de abertura prevista, para apanhar aberturas atrasadas ou cancelamentos.
     Devolve (sucesso, match), tal como attempt_booking."""
     activities = filter_activities(session, token, gym_id, date_str)
-    match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"])
+    match = find_matching_activity(activities, cfg["CLASS_NAME"], cfg["CLASS_TIME"], cfg["MARGIN_MINUTES"])
     if match is None:
         logging.info("Verificação horária: aula ainda não está publicada no horário.")
         return False, None
@@ -428,14 +447,149 @@ def wait_until(target_dt: datetime):
         time.sleep(min(remaining, 5 if remaining > 5 else 0.02))
 
 
+def set_github_output(**values):
+    path = os.getenv("GITHUB_OUTPUT")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        for k, v in values.items():
+            f.write(f"{k}={v}\n")
+
+
+def default_deadline(launched: datetime) -> datetime:
+    """23:59 (hora de Lisboa) do dia em que o job foi lançado."""
+    return datetime.combine(launched.astimezone(LISBON_TZ).date(), dtime(23, 59), tzinfo=LISBON_TZ)
+
+
+def run_persist(cfg: dict, deadline: datetime, interval_s: float, max_runtime_s: float):
+    """Modo 'lançar uma vez e insistir': rajada na abertura prevista (se ainda
+    estiver por vir) e depois uma verificação a cada 'interval_s' até conseguir
+    reservar ou passar o 'deadline'. Se esgotar o tempo máximo de uma execução
+    do GitHub antes do prazo, sinaliza (via GITHUB_OUTPUT) que o workflow deve
+    relançar-se com o mesmo prazo."""
+    started = time.monotonic()
+    class_dt = next_class_datetime(cfg["CLASS_DAY"], cfg["CLASS_TIME"])
+    open_dt = class_dt - timedelta(days=BOOKING_WINDOW_DAYS)
+    arrive_at = open_dt - timedelta(seconds=ARRIVE_EARLY_SECONDS)
+    date_str = class_dt.date().isoformat()
+    fallback_label = format_class_label(cfg)
+    logging.info(
+        f"Modo persistente: aula {class_dt.isoformat()} | abertura {open_dt.isoformat()} | "
+        f"prazo {deadline.isoformat()} | intervalo {interval_s / 60:.0f} min"
+    )
+
+    def out_of_time() -> bool:
+        return time.monotonic() - started >= max_runtime_s
+
+    def relaunch():
+        logging.info("Tempo máximo desta execução esgotado -- vou pedir o relançamento com o mesmo prazo.")
+        set_github_output(relaunch="true", deadline=deadline.isoformat())
+
+    if open_dt >= deadline:
+        msg = (
+            f"O job foi lançado mas a reserva de {fallback_label} só abre em {open_dt.isoformat()}, "
+            f"depois do prazo de hoje ({deadline.isoformat()}). Nada a fazer nesta execução."
+        )
+        logging.warning(msg)
+        notify("VivaGym - Job lançado fora do dia de abertura", msg)
+        return
+
+    while now_lisbon() < arrive_at:
+        if out_of_time():
+            relaunch()
+            return
+        time.sleep(min(60, max(0.0, (arrive_at - now_lisbon()).total_seconds())))
+
+    burst_pending = now_lisbon() <= open_dt
+    consecutive_errors = 0
+    error_notified = False
+
+    while now_lisbon() < deadline:
+        if out_of_time():
+            relaunch()
+            return
+        try:
+            gym_id = resolve_gym_id(cfg["GYM_NAME"])
+            session = requests.Session()
+            token = login(session, cfg["VIVAGYM_EMAIL"], cfg["VIVAGYM_PASSWORD"])
+
+            if is_already_booked(session, token, cfg["CLASS_NAME"], date_str):
+                logging.info("Já está reservada para esta data -- job concluído.")
+                return
+
+            if burst_pending:
+                burst_pending = False
+                wait_until(open_dt)
+                success, match = attempt_booking(session, token, gym_id, cfg, date_str, dry_run=False)
+                logging.info("RESULTADO (rajada): SUCESSO" if success else "RESULTADO (rajada): FALHOU")
+                if success:
+                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
+                    return
+                notify(
+                    "VivaGym - Reserva falhou",
+                    f"Não consegui reservar {fallback_label} na hora exata da abertura. "
+                    f"Vou continuar a tentar de {interval_s / 60:.0f} em {interval_s / 60:.0f} minutos "
+                    f"até às {deadline.strftime('%H:%M')} de hoje.",
+                )
+            else:
+                success, match = attempt_single_check(session, token, gym_id, cfg, date_str)
+                logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: sem novidade")
+                if success:
+                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
+                    return
+            consecutive_errors = 0
+        except Exception as e:
+            consecutive_errors += 1
+            logging.exception(f"Erro nesta ronda ({consecutive_errors} seguido(s)); volto a tentar na próxima.")
+            if consecutive_errors >= 3 and not error_notified:
+                error_notified = True
+                notify("VivaGym - Erros repetidos no agente", f"Erro ao tentar reservar {fallback_label}: {e}. Continuo a tentar até ao prazo.")
+
+        remaining = (deadline - now_lisbon()).total_seconds()
+        if remaining <= 0:
+            break
+        logging.info(f"Próxima verificação daqui a {min(interval_s, remaining) / 60:.0f} min.")
+        time.sleep(min(interval_s, remaining))
+
+    logging.error("Prazo atingido sem conseguir reservar.")
+    notify(
+        "VivaGym - Sem vaga até ao fim do dia",
+        f"Não consegui reservar {fallback_label} até às {deadline.strftime('%H:%M')}. O job terminou.",
+    )
+
+
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Agente de marcação VivaGym. Ginásio/aula/dia/hora podem vir por argumento ou do .env."
+    )
     parser.add_argument("--discover", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--gym", help='Nome do ginásio (ex: "Benfica"). Substitui GYM_NAME.')
+    parser.add_argument("--class-name", help='Nome da aula (ex: "V-Power"). Substitui CLASS_NAME.')
+    parser.add_argument("--day", help='Dia da semana (ex: "Domingo"). Substitui CLASS_DAY.')
+    parser.add_argument("--time", help='Hora objetivo HH:MM, 24h (ex: "10:30"). Substitui CLASS_TIME.')
+    parser.add_argument("--margin-minutes", type=int,
+                        help="Margem em minutos à volta da hora objetivo (por omissão 60, ou seja, +-1h).")
+    parser.add_argument("--persist", action="store_true",
+                        help="Tenta de X em X minutos até conseguir ou até ao prazo (por omissão 23:59 do dia de lançamento).")
+    parser.add_argument("--deadline", help="Prazo ISO-8601 (usado nos relançamentos automáticos do modo --persist).")
+    parser.add_argument("--interval-minutes", type=float, default=30)
+    parser.add_argument("--max-runtime-minutes", type=float, default=300,
+                        help="Tempo máximo de uma execução antes de pedir relançamento (limite do GitHub: 6h por job).")
     args = parser.parse_args()
 
     setup_logging()
-    cfg = load_config()
+    cfg = load_config(args)
+
+    if args.persist:
+        if args.deadline:
+            deadline = datetime.fromisoformat(args.deadline).astimezone(LISBON_TZ)
+        else:
+            launched_raw = os.getenv("RUN_LAUNCHED_AT")
+            launched = datetime.fromisoformat(launched_raw) if launched_raw else now_lisbon()
+            deadline = default_deadline(launched)
+        run_persist(cfg, deadline, args.interval_minutes * 60, args.max_runtime_minutes * 60)
+        return
 
     class_dt = next_class_datetime(cfg["CLASS_DAY"], cfg["CLASS_TIME"])
     open_dt = class_dt - timedelta(days=BOOKING_WINDOW_DAYS)
