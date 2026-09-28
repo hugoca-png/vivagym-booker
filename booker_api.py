@@ -386,6 +386,17 @@ def format_class_label(cfg: dict, match: dict = None) -> str:
     return f"{cfg['CLASS_NAME']} ({cfg['CLASS_DAY']} {cfg['CLASS_TIME']}, {cfg['GYM_NAME']})"
 
 
+def notify_success(cfg: dict, match: dict = None):
+    """Email de sucesso: aula realmente reservada (data/hora da API) e o momento
+    em que a reserva foi feita."""
+    booked_at = now_lisbon().strftime("%d/%m/%Y às %H:%M:%S")
+    notify(
+        "VivaGym - Reserva confirmada",
+        f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.\n"
+        f"Reserva feita em {booked_at} (hora de Lisboa).",
+    )
+
+
 def notify_windows(title: str, message: str, duration_ms: int = 15000):
     title_b64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
     message_b64 = base64.b64encode(message.encode("utf-8")).decode("ascii")
@@ -528,7 +539,7 @@ def run_persist(cfg: dict, deadline: datetime, interval_s: float, max_runtime_s:
                 success, match = attempt_booking(session, token, gym_id, cfg, date_str, dry_run=False)
                 logging.info("RESULTADO (rajada): SUCESSO" if success else "RESULTADO (rajada): FALHOU")
                 if success:
-                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
+                    notify_success(cfg, match)
                     return
                 notify(
                     "VivaGym - Reserva falhou",
@@ -540,7 +551,7 @@ def run_persist(cfg: dict, deadline: datetime, interval_s: float, max_runtime_s:
                 success, match = attempt_single_check(session, token, gym_id, cfg, date_str)
                 logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: sem novidade")
                 if success:
-                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
+                    notify_success(cfg, match)
                     return
             consecutive_errors = 0
         except Exception as e:
@@ -636,7 +647,7 @@ def main():
             logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: FALHOU")
             if is_real_run:
                 if success:
-                    notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
+                    notify_success(cfg, match)
                 else:
                     notify(
                         "VivaGym - Reserva falhou",
@@ -651,7 +662,7 @@ def main():
             success, match = attempt_single_check(session, token, gym_id, cfg, date_str)
             logging.info("RESULTADO: SUCESSO" if success else "RESULTADO: sem novidade")
             if is_real_run and success:
-                notify("VivaGym - Reserva confirmada", f"Reserva efetuada com sucesso: {format_class_label(cfg, match)}.")
+                notify_success(cfg, match)
         else:
             logging.info(
                 f"Ainda faltam {seconds_to_arrive:.0f}s para a janela de abertura prevista "
