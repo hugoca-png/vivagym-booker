@@ -3,18 +3,43 @@ name: VivaGym Persistent Booking
 # Lançado de fora (ex: cron-job.org, via API de workflow_dispatch) uma vez por
 # dia de abertura. Tenta reservar de 30 em 30 minutos até conseguir, com prazo
 # às 23:59 (hora de Lisboa) do dia em que foi lançado. Cada job do GitHub tem no
-# máximo 6h, por isso o job relança-se a si próprio (mesmo prazo) quando esgota
-# ~5h -- o input "deadline" só é preenchido nesses relançamentos automáticos.
+# máximo 6h, por isso o job relança-se a si próprio (mesmo prazo e mesma aula)
+# quando esgota ~5h -- o input "deadline" só é preenchido nesses relançamentos.
+#
+# Para reservar OUTRAS aulas basta lançar este mesmo workflow com inputs
+# diferentes (um cronjob por aula). Input vazio = usa a Variable do repositório
+# (GYM_NAME, CLASS_NAME, CLASS_DAY, CLASS_TIME).
 on:
   workflow_dispatch:
     inputs:
+      gym:
+        description: "Ginásio (vazio = Variable GYM_NAME)"
+        required: false
+        default: ""
+      class_name:
+        description: "Nome da aula (vazio = Variable CLASS_NAME)"
+        required: false
+        default: ""
+      day:
+        description: "Dia da semana, ex: Domingo (vazio = Variable CLASS_DAY)"
+        required: false
+        default: ""
+      time:
+        description: "Hora objetivo HH:MM (vazio = Variable CLASS_TIME)"
+        required: false
+        default: ""
+      margin_minutes:
+        description: "Margem em minutos à volta da hora (vazio = 60)"
+        required: false
+        default: ""
       deadline:
         description: "Prazo ISO-8601 (só para relançamentos automáticos; deixar vazio ao lançar)"
         required: false
         default: ""
 
+# Um grupo por aula: aulas diferentes correm em paralelo, a mesma aula não.
 concurrency:
-  group: vivagym-persist
+  group: vivagym-persist-${{ inputs.class_name || vars.CLASS_NAME }}-${{ inputs.day || vars.CLASS_DAY }}-${{ inputs.time || vars.CLASS_TIME }}
   cancel-in-progress: false
 
 permissions:
@@ -49,20 +74,32 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NOTIFY_EMAIL_TO: ${{ vars.NOTIFY_EMAIL_TO }}
           RUN_LAUNCHED_AT: ${{ github.run_started_at }}
-          DEADLINE_INPUT: ${{ inputs.deadline }}
+          IN_GYM: ${{ inputs.gym }}
+          IN_CLASS: ${{ inputs.class_name }}
+          IN_DAY: ${{ inputs.day }}
+          IN_TIME: ${{ inputs.time }}
+          IN_MARGIN: ${{ inputs.margin_minutes }}
+          IN_DEADLINE: ${{ inputs.deadline }}
         run: |
-          if [ -n "$DEADLINE_INPUT" ]; then
-            python booker_api.py --persist --deadline "$DEADLINE_INPUT"
-          else
-            python booker_api.py --persist
-          fi
+          args=(--persist --gym "$IN_GYM" --class-name "$IN_CLASS" --day "$IN_DAY" --time "$IN_TIME")
+          if [ -n "$IN_MARGIN" ]; then args+=(--margin-minutes "$IN_MARGIN"); fi
+          if [ -n "$IN_DEADLINE" ]; then args+=(--deadline "$IN_DEADLINE"); fi
+          python booker_api.py "${args[@]}"
 
       - name: Relançar (continuação até ao mesmo prazo)
         if: steps.run.outputs.relaunch == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_DEADLINE: ${{ steps.run.outputs.deadline }}
-        run: gh workflow run vivagym-persist.yml --ref "${{ github.ref_name }}" -f "deadline=$NEXT_DEADLINE"
+          IN_GYM: ${{ inputs.gym }}
+          IN_CLASS: ${{ inputs.class_name }}
+          IN_DAY: ${{ inputs.day }}
+          IN_TIME: ${{ inputs.time }}
+          IN_MARGIN: ${{ inputs.margin_minutes }}
+        run: |
+          gh workflow run vivagym-persist.yml --ref "${{ github.ref_name }}" \
+            -f "deadline=$NEXT_DEADLINE" -f "gym=$IN_GYM" -f "class_name=$IN_CLASS" \
+            -f "day=$IN_DAY" -f "time=$IN_TIME" -f "margin_minutes=$IN_MARGIN"
 
       - name: Guardar logs
         if: always()

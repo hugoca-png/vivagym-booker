@@ -353,12 +353,17 @@ def is_already_booked(session: requests.Session, token: str, class_name: str, cl
         items = data.get("activities") if isinstance(data, dict) else data
         if not isinstance(items, list):
             return False
+        wanted = class_name.strip().lower()
         for item in items:
             if item.get("state") != "BOOKED":
                 continue
             booking = item.get("booking") or {}
-            if str(booking.get("date", "")).startswith(class_date):
+            if not str(booking.get("date", "")).startswith(class_date):
+                continue
+            # Vários bookings no mesmo dia (aulas diferentes) não se podem confundir.
+            if wanted in json.dumps(item, ensure_ascii=False).lower():
                 return True
+            logging.info(f"Há uma reserva BOOKED em {class_date}, mas não é '{class_name}' -- a ignorar.")
         return False
     except Exception as e:
         logging.info(f"Não consegui confirmar reservas existentes (a assumir que não está reservada): {e}")

@@ -129,6 +129,19 @@ Localmente: `python booker_api.py --persist [--interval-minutes 30]`.
    - Horário: Segundas-feiras, de manhã (ex: 09:30), fuso **Europe/Lisbon**.
 3. Uma resposta `204` significa que o workflow foi lançado.
 
+## 10. Reservar outras aulas (mesmo código, outro cronjob)
+
+O workflow `vivagym-persist.yml` aceita inputs (`gym`, `class_name`, `day`, `time`, `margin_minutes`); os que ficarem vazios usam as Variables do repositório (a aula "principal"). Para cada aula extra, cria **um cronjob novo** no cron-job.org, igual ao da secção 9 mas com outro corpo e outro horário. Exemplo, Cycling às Quartas às 19:00:
+
+```json
+{"ref":"main","inputs":{"class_name":"Cycling","day":"Quarta","time":"19:00"}}
+```
+
+- Lança o cronjob **6 dias antes da aula, de manhã**, no dia em que a reserva abre. Para aula de Quarta, abre à Quinta anterior às 19:00: o cronjob corre de manhã nesse dia e o job espera pela abertura (o prazo é 23:59 desse dia).
+- Podes juntar `"gym":"Alvalade"` (ou outro ginásio) e `"margin_minutes":"30"` nos `inputs`. Os valores são sempre texto, entre aspas.
+- Aulas diferentes correm em paralelo, porque cada uma tem o seu grupo de concorrência.
+- Para testar à mão: **Actions → VivaGym Persistent Booking → Run workflow** mostra estes campos.
+
 ## Notas
 
 - Os logs de cada execução ficam em `logs/booker_api_*.log` localmente, ou como artefacto descarregável em cada execução no GitHub Actions (separador Actions → execução → Artifacts).
